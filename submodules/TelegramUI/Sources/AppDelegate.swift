@@ -42,10 +42,12 @@ import TelegramUIDeclareEncodables
 import ContextMenuScreen
 import MetalEngine
 import RecaptchaEnterprise
+import GlassBackgroundComponent
 
 #if canImport(AppCenter)
 import AppCenter
 import AppCenterCrashes
+
 #endif
 
 private let handleVoipNotifications = false
@@ -689,7 +691,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         GlobalExperimentalSettings.enableFeed = false
         
         self.window?.makeKeyAndVisible()
-        
+
         var hasActiveCalls: Signal<Bool, NoError> = .single(false)
         if CallKitIntegration.isAvailable, let callKitIntegration = CallKitIntegration.shared {
             hasActiveCalls = callKitIntegration.hasActiveCalls

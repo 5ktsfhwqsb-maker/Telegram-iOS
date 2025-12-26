@@ -1787,8 +1787,9 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
     }
     
     public func makeEdgeEffectNode() -> WallpaperEdgeEffectNode? {
-        let node = WallpaperEdgeEffectNodeImpl(parentNode: self)
-        return node
+        return nil
+//        let node = WallpaperEdgeEffectNodeImpl(parentNode: self)
+//        return node
     }
 }
 

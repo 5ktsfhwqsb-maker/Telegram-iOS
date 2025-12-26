@@ -83,7 +83,7 @@ final class ChatListContainerItemNode: ASDisplayNode {
         super.init()
         
         self.addSubnode(self.listNode)
-        self.view.addSubview(self.edgeEffectView)
+//        self.view.addSubview(self.edgeEffectView)
         
         self.listNode.isEmptyUpdated = { [weak self] isEmptyState, _, transition in
             guard let strongSelf = self else {

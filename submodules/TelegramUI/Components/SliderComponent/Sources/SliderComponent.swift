@@ -6,6 +6,8 @@ import TelegramPresentationData
 import LegacyComponents
 import ComponentFlow
 
+import LiquidGlassComponent
+
 public final class SliderComponent: Component {
     public final class Discrete: Equatable {
         public let valueCount: Int
@@ -121,9 +123,223 @@ public final class SliderComponent: Component {
         
     }
     
+    private final class CustomSliderView: UIView {
+        private let trackBackgroundLayer = CAShapeLayer()
+        private let trackForegroundLayer = CAShapeLayer()
+        private let knobView = UIImageView()
+        private let liquidCaretView: LiquidCaretView
+        
+        private var component: SliderComponent?
+        private var value: CGFloat = 0.0
+        
+        var valueChanged: ((CGFloat) -> Void)?
+        var interactionBegan: (() -> Void)?
+        var interactionEnded: (() -> Void)?
+        
+        override init(frame: CGRect) {
+            self.liquidCaretView = LiquidCaretView(frame: CGRect(origin: .zero, size: CGSize(width: 37.0, height: 24.0)))
+            
+            super.init(frame: frame)
+            
+            self.layer.addSublayer(self.trackBackgroundLayer)
+            self.layer.addSublayer(self.trackForegroundLayer)
+            self.addSubview(self.knobView)
+            self.addSubview(self.liquidCaretView)
+            
+            self.trackBackgroundLayer.lineCap = .round
+            self.trackForegroundLayer.lineCap = .round
+            
+            self.liquidCaretView.isHidden = true
+            self.liquidCaretView.isUserInteractionEnabled = false
+            
+            // Apply consistent shadow to liquid view
+            self.liquidCaretView.layer.shadowColor = UIColor.black.cgColor
+            self.liquidCaretView.layer.shadowOffset = CGSize(width: 0.0, height: 4.0)
+            self.liquidCaretView.layer.shadowRadius = 8.0
+            self.liquidCaretView.layer.shadowOpacity = 0.12
+            // Ensure no clipping so shadow is visible
+            self.liquidCaretView.clipsToBounds = false
+            self.liquidCaretView.configuration = LiquidASSView.Configuration(
+                cornerRadius: 12,
+                blurIntensity: 0,
+                lensDistortionStrength: 0.05,
+                cornerSegments: 18,
+                distortionPadding: 2.2,
+                distortionMultiplier: 4.5,
+                distortionExponent: 5.0
+            )
+            // Apply consistent shadow to static knob view (layer-based to avoid clipping in image context)
+            self.knobView.layer.shadowColor = UIColor.black.cgColor
+            self.knobView.layer.shadowOffset = CGSize(width: 0.0, height: 4.0)
+            self.knobView.layer.shadowRadius = 8.0
+            self.knobView.layer.shadowOpacity = 0.12
+            self.knobView.clipsToBounds = false
+            
+            self.clipsToBounds = false
+            
+            self.configureForPhotoEditor()
+            
+            let panGesture = UIPanGestureRecognizer(target: self, action: #selector(self.handlePan(_:)))
+            self.addGestureRecognizer(panGesture)
+        }
+        
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+        
+        private func configureForPhotoEditor() {
+            // Configuration matching LiquidCaretView.configureForPhotoEditor() in Swift
+        }
+        
+        func update(component: SliderComponent, availableSize: CGSize) {
+            self.component = component
+            
+            let trackHeight: CGFloat = 6.0 // User requested thickened line
+            let knobSize = CGSize(width: 37.0, height: 24.0)
+            
+            self.trackBackgroundLayer.strokeColor = component.trackBackgroundColor.cgColor
+            self.trackForegroundLayer.strokeColor = component.trackForegroundColor.cgColor
+            self.trackBackgroundLayer.lineWidth = trackHeight
+            self.trackForegroundLayer.lineWidth = trackHeight
+            
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: trackHeight / 2.0, y: availableSize.height / 2.0))
+            path.addLine(to: CGPoint(x: availableSize.width - trackHeight / 2.0, y: availableSize.height / 2.0))
+            
+            self.trackBackgroundLayer.path = path.cgPath
+            
+            // Generate or set knob image
+            if self.knobView.image == nil {
+                self.knobView.image = generateImage(knobSize, rotatedContext: { size, context in
+                    context.clear(CGRect(origin: .zero, size: size))
+                    // Shadow is now handled via layer to avoid clipping
+                    context.setFillColor(UIColor.white.cgColor)
+                    let path = UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.height / 2.0)
+                    context.addPath(path.cgPath)
+                    context.fillPath()
+                })
+            }
+             self.knobView.frame = CGRect(origin: .zero, size: knobSize)
+            
+            switch component.content {
+
+            case let .continuous(continuous):
+                self.value = continuous.value
+            case let .discrete(discrete):
+                if discrete.valueCount > 1 {
+                     self.value = CGFloat(discrete.value) / CGFloat(discrete.valueCount - 1)
+                } else {
+                    self.value = 0.0
+                }
+            }
+            
+            self.updateLayout(availableSize: availableSize)
+        }
+        
+        private func updateLayout(availableSize: CGSize) {
+            let trackHeight: CGFloat = 6.0
+            let knobSize = CGSize(width: 37.0, height: 24.0)
+            let usableWidth = availableSize.width - trackHeight // Padding for line cap
+            
+            let x = (trackHeight / 2.0) + self.value * usableWidth
+            
+            let knobFrame = CGRect(
+                x: x - knobSize.width / 2.0,
+                y: (availableSize.height - knobSize.height) / 2.0,
+                width: knobSize.width,
+                height: knobSize.height
+            )
+            
+            self.knobView.frame = knobFrame
+            
+            let foregroundPath = UIBezierPath()
+            foregroundPath.move(to: CGPoint(x: trackHeight / 2.0, y: availableSize.height / 2.0))
+            foregroundPath.addLine(to: CGPoint(x: x, y: availableSize.height / 2.0))
+            self.trackForegroundLayer.path = foregroundPath.cgPath
+            
+            // Update Liquid Caret frame only if not dragging (physics handles it otherwise) or just ensure it's centered
+             if self.liquidCaretView.isHidden {
+                 self.liquidCaretView.frame = knobFrame
+                 self.liquidCaretView.resize(width: knobFrame.width, height: knobFrame.height)
+             }
+        }
+        
+        @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+            let location = gesture.location(in: self)
+            let trackHeight: CGFloat = 6.0
+            let availableWidth = self.bounds.width - trackHeight
+            var newValue = (location.x - trackHeight / 2.0) / availableWidth
+            newValue = max(0.0, min(1.0, newValue))
+            
+            switch gesture.state {
+            case .began:
+                self.interactionBegan?()
+                self.knobView.isHidden = true
+                
+                // liquidCaretView might be removed by animateDismissal, so re-add if needed
+                if self.liquidCaretView.superview == nil {
+                    self.addSubview(self.liquidCaretView)
+                }
+                self.liquidCaretView.isHidden = false
+                // Reset shadow opacity (might have been faded out)
+                self.liquidCaretView.layer.shadowOpacity = 0.12
+                self.liquidCaretView.startDragging(at: self.knobView.center.x)
+                
+                // Pop animation: Scale TO 1.4x (User requested 1.4x for active state)
+                self.liquidCaretView.transform = .identity
+                UIView.animate(withDuration: 0.3, delay: 0.0, usingSpringWithDamping: 0.6, initialSpringVelocity: 0.0, options: [], animations: {
+                    self.liquidCaretView.transform = CGAffineTransform(scaleX: 1.4, y: 1.4)
+                }, completion: nil)
+                
+            case .changed:
+                self.value = newValue
+                self.valueChanged?(newValue)
+                
+                // Update visual position of caret
+                // We need to map 0..1 value back to X coordinate
+                let x = (trackHeight / 2.0) + self.value * availableWidth
+                self.liquidCaretView.setTargetPosition(x: x)
+                
+                 let foregroundPath = UIBezierPath()
+                foregroundPath.move(to: CGPoint(x: trackHeight / 2.0, y: self.bounds.height / 2.0))
+                foregroundPath.addLine(to: CGPoint(x: x, y: self.bounds.height / 2.0))
+                self.trackForegroundLayer.path = foregroundPath.cgPath
+                
+            case .ended, .cancelled:
+                self.interactionEnded?()
+                 let x = (trackHeight / 2.0) + self.value * availableWidth
+                 let knobSize = CGSize(width: 37.0, height: 24.0)
+                 let targetFrame = CGRect(
+                    x: x - knobSize.width / 2.0,
+                    y: (self.bounds.height - knobSize.height) / 2.0,
+                    width: knobSize.width,
+                    height: knobSize.height
+                )
+                
+                // Show knob immediately with alpha 0 and animate in parallel
+                self.knobView.isHidden = false
+                self.knobView.frame = targetFrame
+                self.knobView.alpha = 0.0
+                
+                UIView.animate(withDuration: 0.25, delay: 0.0, options: [.curveEaseOut], animations: {
+                    self.knobView.alpha = 1.0
+                    // Fade out liquid shadow to prevent double shadow during cross-fade
+                    self.liquidCaretView.layer.shadowOpacity = 0.0
+                }, completion: nil)
+                
+                self.liquidCaretView.animateDismissal(to: targetFrame, completion: {
+                    // animateDismissal removes it from superview
+                })
+                
+            default:
+                break
+            }
+        }
+    }
+    
     public final class View: UIView {
         private var nativeSliderView: SliderView?
-        private var sliderView: TGPhotoEditorSliderView?
+        private var sliderView: CustomSliderView?
         
         private var component: SliderComponent?
         private weak var state: EmptyComponentState?
@@ -191,136 +407,69 @@ public final class SliderComponent: Component {
             } else {
                 var internalIsTrackingUpdated: ((Bool) -> Void)?
                 if let isTrackingUpdated = component.isTrackingUpdated {
-                    internalIsTrackingUpdated = { [weak self] isTracking in
-                        if let self {
-                            if !"".isEmpty {
-                                if isTracking {
-                                    self.sliderView?.bordered = true
-                                } else {
-                                    DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 0.1, execute: { [weak self] in
-                                        self?.sliderView?.bordered = false
-                                    })
-                                }
-                            }
-                        }
+                    internalIsTrackingUpdated = { isTracking in
                         isTrackingUpdated(isTracking)
                     }
                 }
                 
-                let sliderView: TGPhotoEditorSliderView
+                let sliderView: CustomSliderView
                 if let current = self.sliderView {
                     sliderView = current
                 } else {
-                    sliderView = TGPhotoEditorSliderView()
-                    sliderView.enablePanHandling = true
-                    if let knobSize = component.knobSize {
-                        sliderView.lineSize = knobSize + 4.0
-                    } else {
-                        sliderView.lineSize = 4.0
-                    }
-                    sliderView.trackCornerRadius = sliderView.lineSize * 0.5
-                    sliderView.dotSize = 5.0
-                    sliderView.minimumValue = 0.0
-                    sliderView.startValue = 0.0
-                    sliderView.disablesInteractiveTransitionGestureRecognizer = true
-                    
-                    switch component.content {
-                    case let .discrete(discrete):
-                        sliderView.maximumValue = CGFloat(discrete.valueCount - 1)
-                        sliderView.positionsCount = discrete.valueCount
-                        sliderView.useLinesForPositions = true
-                        sliderView.markPositions = discrete.markPositions
-                    case .continuous:
-                        sliderView.maximumValue = 1.0
-                    }
-                    
-                    sliderView.backgroundColor = nil
-                    sliderView.isOpaque = false
-                    sliderView.backColor = component.trackBackgroundColor
-                    sliderView.startColor = component.trackBackgroundColor
-                    sliderView.trackColor = component.trackForegroundColor
-                    if let knobSize = component.knobSize {
-                        sliderView.knobImage = generateImage(CGSize(width: 40.0, height: 40.0), rotatedContext: { size, context in
-                            context.clear(CGRect(origin: CGPoint(), size: size))
-                            context.setShadow(offset: CGSize(width: 0.0, height: -3.0), blur: 12.0, color: UIColor(white: 0.0, alpha: 0.25).cgColor)
-                            if let knobColor = component.knobColor {
-                                context.setFillColor(knobColor.cgColor)
-                            } else {
-                                context.setFillColor(UIColor.white.cgColor)
-                            }
-                            context.fillEllipse(in: CGRect(origin: CGPoint(x: floor((size.width - knobSize) * 0.5), y: floor((size.width - knobSize) * 0.5)), size: CGSize(width: knobSize, height: knobSize)))
-                        })
-                    } else {
-                        sliderView.knobImage = generateImage(CGSize(width: 40.0, height: 40.0), rotatedContext: { size, context in
-                            context.clear(CGRect(origin: CGPoint(), size: size))
-                            context.setShadow(offset: CGSize(width: 0.0, height: -3.0), blur: 12.0, color: UIColor(white: 0.0, alpha: 0.25).cgColor)
-                            context.setFillColor(UIColor.white.cgColor)
-                            context.fillEllipse(in: CGRect(origin: CGPoint(x: 6.0, y: 6.0), size: CGSize(width: 28.0, height: 28.0)))
-                        })
-                    }
-                    
-                    sliderView.frame = CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: size)
-                    sliderView.hitTestEdgeInsets = UIEdgeInsets(top: -sliderView.frame.minX, left: 0.0, bottom: 0.0, right: -sliderView.frame.minX)
-                    
-                    
-                    sliderView.disablesInteractiveTransitionGestureRecognizer = true
-                    sliderView.addTarget(self, action: #selector(self.sliderValueChanged), for: .valueChanged)
-                    sliderView.layer.allowsGroupOpacity = true
+                    sliderView = CustomSliderView()
                     self.sliderView = sliderView
                     self.addSubview(sliderView)
-                }
-                sliderView.lowerBoundTrackColor = component.minTrackForegroundColor
-                switch component.content {
-                case let .discrete(discrete):
-                    sliderView.value = CGFloat(discrete.value)
-                    if let minValue = discrete.minValue {
-                        sliderView.lowerBoundValue = CGFloat(minValue)
-                    } else {
-                        sliderView.lowerBoundValue = 0.0
+                    
+                sliderView.valueChanged = { [weak self] value in
+                        self?.updateValue(value)
                     }
-                case let .continuous(continuous):
-                    sliderView.value = continuous.value
-                    if let minValue = continuous.minValue {
-                        sliderView.lowerBoundValue = minValue
-                    } else {
-                        sliderView.lowerBoundValue = 0.0
+                    
+                    sliderView.interactionBegan = {
+                        internalIsTrackingUpdated?(true)
                     }
-                }
-                sliderView.interactionBegan = {
-                    internalIsTrackingUpdated?(true)
-                }
-                sliderView.interactionEnded = {
-                    internalIsTrackingUpdated?(false)
+                    sliderView.interactionEnded = {
+                        internalIsTrackingUpdated?(false)
+                    }
                 }
                 
-                transition.setFrame(view: sliderView, frame: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: availableSize.width, height: 44.0)))
-                sliderView.hitTestEdgeInsets = UIEdgeInsets(top: 0.0, left: 0.0, bottom: 0.0, right: 0.0)
+                sliderView.update(component: component, availableSize: size)
+                
+                transition.setFrame(view: sliderView, frame: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: size))
             }
             
             return size
+        }
+        
+        private func updateValue(_ value: CGFloat) {
+            guard let component = self.component else {
+                return
+            }
+            switch component.content {
+            case let .discrete(discrete):
+                let intValue = Int(round(value * CGFloat(discrete.valueCount - 1)))
+                discrete.valueUpdated(intValue)
+            case let .continuous(continuous):
+                continuous.valueUpdated(value)
+            }
         }
         
         @objc private func sliderValueChanged() {
             guard let component = self.component else {
                 return
             }
-            let floatValue: CGFloat
-            if let sliderView = self.sliderView {
-                floatValue = sliderView.value
-            } else if let nativeSliderView = self.nativeSliderView {
-                floatValue = CGFloat(nativeSliderView.value)
-            } else {
-                return
-            }
-            switch component.content {
-            case let .discrete(discrete):
-                discrete.valueUpdated(Int(floatValue))
-            case let .continuous(continuous):
-                continuous.valueUpdated(floatValue)
+             // Handle native slider updates if needed, though we primarily use CustomSliderView now
+             if let nativeSliderView = self.nativeSliderView {
+                let floatValue = CGFloat(nativeSliderView.value)
+                switch component.content {
+                case let .discrete(discrete):
+                    discrete.valueUpdated(Int(floatValue))
+                case let .continuous(continuous):
+                    continuous.valueUpdated(floatValue)
+                }
             }
         }
     }
-
+    
     public func makeView() -> View {
         return View(frame: CGRect())
     }
@@ -329,3 +478,4 @@ public final class SliderComponent: Component {
         return view.update(component: self, availableSize: availableSize, state: state, environment: environment, transition: transition)
     }
 }
+

@@ -15,6 +15,7 @@ swift_library(
         "//submodules/Components/ComponentDisplayAdapters",
         "//submodules/UIKitRuntimeUtils",
         "//submodules/AppBundle",
+        "//submodules/TelegramUI/Components/LiquidGlassComponent",
     ],
     visibility = [
         "//visibility:public",

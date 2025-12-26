@@ -37,6 +37,7 @@ objc_library(
     deps = [
         "//submodules/SSignalKit/SSignalKit:SSignalKit",
         "//submodules/AppBundle:AppBundle",
+        "//submodules/TelegramUI/Components/LiquidGlassComponent:LiquidGlassComponent",
     ],
     sdk_frameworks = [
         "Foundation",

@@ -6,6 +6,7 @@ import ComponentDisplayAdapters
 import UIKitRuntimeUtils
 import CoreImage
 import AppBundle
+import LiquidGlassComponent
 
 private final class ContentContainer: UIView {
     private let maskContentView: UIView
@@ -310,6 +311,8 @@ public class GlassBackgroundView: UIView {
     private let foregroundView: UIImageView?
     private let shadowView: UIImageView?
     
+    private let liquidView: LiquidASSView?
+    
     private let maskContainerView: UIView
     public let maskContentView: UIView
     private let contentContainer: ContentContainer
@@ -326,7 +329,7 @@ public class GlassBackgroundView: UIView {
     
     public private(set) var params: Params?
         
-    public static var useCustomGlassImpl: Bool = false
+    public static var useCustomGlassImpl: Bool = true
     
     public override init(frame: CGRect) {
         if #available(iOS 26.0, *), !GlassBackgroundView.useCustomGlassImpl {
@@ -345,22 +348,23 @@ public class GlassBackgroundView: UIView {
             
             self.foregroundView = nil
             self.shadowView = nil
+            self.liquidView = nil
         } else {
-            let backgroundNode = NavigationBackgroundNode(color: .black, enableBlur: true, customBlurRadius: 8.0)
-            self.backgroundNode = backgroundNode
+            let liquidView = LiquidASSView(frame: CGRect())
+            self.liquidView = liquidView
+            
+            self.backgroundNode = nil
             self.nativeView = nil
             self.nativeViewClippingContext = nil
             self.nativeParamsView = nil
-            self.foregroundView = UIImageView()
+            self.foregroundView = nil
             
-            self.shadowView = UIImageView()
+            self.shadowView = nil
         }
         
         self.maskContainerView = UIView()
         self.maskContainerView.backgroundColor = .white
-        if let filter = CALayer.luminanceToAlpha() {
-            self.maskContainerView.layer.filters = [filter]
-        }
+        // Removed luminanceToAlpha filter
         
         self.maskContentView = UIView()
         self.maskContainerView.addSubview(self.maskContentView)
@@ -381,6 +385,9 @@ public class GlassBackgroundView: UIView {
         if let foregroundView = self.foregroundView {
             self.addSubview(foregroundView)
             foregroundView.mask = self.maskContainerView
+        }
+        if let liquidView = self.liquidView {
+            self.addSubview(liquidView)
         }
         self.addSubview(self.contentContainer)
     }
@@ -416,6 +423,31 @@ public class GlassBackgroundView: UIView {
                 let nativeFrame = CGRect(origin: CGPoint(), size: size)
                 transition.setFrame(view: nativeView, frame: nativeFrame)
             }
+
+        }
+        
+        if let liquidView = self.liquidView {
+            let cornerRadius: CGFloat
+            switch shape {
+            case let .roundedRect(value):
+                cornerRadius = value
+            }
+            
+            let config = LiquidASSView.Configuration(
+                cornerRadius: cornerRadius,
+                blurIntensity: 3.0,
+                lensDistortionStrength: 0.6,
+                tintColor: tintColor.color,
+                saturation: 1.1,
+                brightness: isDark ? -0.1 : 0.05,
+                contentScale: 0.25,
+                bleedAmount: 3,
+                distortionPadding: 2.2,
+                distortionMultiplier: 4.5,
+                distortionExponent: 2.5
+            )
+            liquidView.apply(configuration: config)
+            transition.setFrame(view: liquidView, frame: CGRect(origin: CGPoint(), size: size))
         }
         if let backgroundNode = self.backgroundNode {
             backgroundNode.updateColor(color: .clear, forceKeepBlur: tintColor.color.alpha != 1.0, transition: transition.containedViewLayoutTransition)

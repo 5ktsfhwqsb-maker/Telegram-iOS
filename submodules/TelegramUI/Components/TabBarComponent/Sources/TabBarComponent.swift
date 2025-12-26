@@ -9,7 +9,9 @@ import MultilineTextComponent
 import LottieComponent
 import UIKitRuntimeUtils
 import BundleIconComponent
+import BundleIconComponent
 import TextBadgeComponent
+import LiquidGlassComponent
 
 public final class TabBarComponent: Component {
     public final class Item: Equatable {
@@ -45,17 +47,20 @@ public final class TabBarComponent: Component {
     public let items: [Item]
     public let selectedId: AnyHashable?
     public let isTablet: Bool
+    public let maxItemWidth: CGFloat
     
     public init(
         theme: PresentationTheme,
         items: [Item],
         selectedId: AnyHashable?,
-        isTablet: Bool
+        isTablet: Bool,
+        maxItemWidth: CGFloat = 85.0
     ) {
         self.theme = theme
         self.items = items
         self.selectedId = selectedId
         self.isTablet = isTablet
+        self.maxItemWidth = maxItemWidth
     }
     
     public static func ==(lhs: TabBarComponent, rhs: TabBarComponent) -> Bool {
@@ -71,6 +76,9 @@ public final class TabBarComponent: Component {
         if lhs.isTablet != rhs.isTablet {
             return false
         }
+        if lhs.maxItemWidth != rhs.maxItemWidth {
+            return false
+        }
         return true
     }
     
@@ -83,7 +91,11 @@ public final class TabBarComponent: Component {
         private var itemViews: [AnyHashable: ComponentView<Empty>] = [:]
         private var selectedItemViews: [AnyHashable: ComponentView<Empty>] = [:]
         
+        private var caretView: LiquidCaretView?
+        private var caretHoveredItemId: AnyHashable?
         private var itemWithActiveContextGesture: AnyHashable?
+        private var previousSelectedId: AnyHashable?
+        private var ignoreNextSelectionAnimation: Bool = false
         
         private var component: TabBarComponent?
         private weak var state: EmptyComponentState?
@@ -144,12 +156,13 @@ public final class TabBarComponent: Component {
             if let nativeTabBar = self.nativeTabBar {
                 self.contextGestureContainerView.addSubview(nativeTabBar)
                 nativeTabBar.delegate = self
-                /*let longPressGesture = UILongPressGestureRecognizer(target: self, action: #selector(self.onLongPressGesture(_:)))
-                longPressGesture.delegate = self
-                self.addGestureRecognizer(longPressGesture)*/
             } else {
                 self.contextGestureContainerView.addSubview(self.backgroundView)
                 self.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.onTapGesture(_:))))
+                
+                let caretGesture = UILongPressGestureRecognizer(target: self, action: #selector(self.handleCaretGesture(_:)))
+                caretGesture.minimumPressDuration = 0.2
+                self.addGestureRecognizer(caretGesture)
             }
             
             self.contextGestureContainerView.shouldBegin = { [weak self] point in
@@ -298,6 +311,193 @@ public final class TabBarComponent: Component {
             }
         }
         
+        @objc private func handleCaretGesture(_ recognizer: UILongPressGestureRecognizer) {
+            guard let component = self.component else { return }
+            
+            let point = recognizer.location(in: self)
+            
+            switch recognizer.state {
+            case .began:
+                // Identify target item
+                if let (_, frame) = self.itemAt(point: point) {
+                    let impact = UIImpactFeedbackGenerator(style: .medium)
+                    impact.impactOccurred()
+                    
+                    self.selectionView.isHidden = true
+                    
+                    if self.caretView == nil {
+                        // Position safely below badges/text but above background
+                        let caretHeight = self.bounds.height * 1.3
+                        let caretWidth: CGFloat = 117.0
+                        let caret = LiquidCaretView(frame: CGRect(x: 0, y: 0, width: caretWidth, height: caretHeight))
+                        
+                        // Center vertically relative to the tab bar container
+                        let centerY = self.bounds.midY
+                        caret.frame = CGRect(x: frame.midX - caretWidth / 2.0, y: centerY - caretHeight / 2.0, width: caretWidth, height: caretHeight)
+                        
+                        // Insert above background
+                        if let background = self.subviews.first(where: { $0 is GlassBackgroundView }) {
+                            self.insertSubview(caret, aboveSubview: background)
+                        } else {
+                            self.addSubview(caret)
+                        }
+                        caret.isUserInteractionEnabled = false
+                        
+                        // Physics tuning for "swimming" lag (same as SwitchNode)
+                        caret.springTension = 260.0
+                        caret.springFriction = 28.0
+                        caret.stretchSensitivity = 0.05
+                        caret.configuration = LiquidASSView.Configuration(
+                            cornerRadius: caretHeight / 2.0,
+                            blurIntensity: 0.0,
+                            lensDistortionStrength: 0.06,
+                            tintColor: nil,
+                            saturation: nil,
+                            brightness: nil,
+                            cornerSegments: 18,
+                            contentScale: UIScreen.main.scale,
+                            visualZoom: 1.0,
+                            bleedAmount: 10.0,
+                            showBorder: false,
+                            distortionPadding: 2.2,
+                            distortionMultiplier: 4.5,
+                            distortionExponent: 3.0
+                        )
+                        self.caretView = caret
+                    }
+                    
+                    self.caretView?.startDragging(at: point.x)
+                    
+                    // Reset parallax
+                    self.contextGestureContainerView.transform = .identity
+                } else {
+                    recognizer.state = .cancelled
+                }
+                
+            case .changed:
+                // Relaxed clamping (overshoot allowed)
+                // User wants edge to be max 5px out.
+                // caretView center is what we control.
+                // minCenter = -20 + halfWidth
+                // maxCenter = width + 20 - halfWidth
+                let clampLimit: CGFloat = 15.0
+                let caretWidth: CGFloat = 117.0 // Updated width
+                let halfWidth = caretWidth / 2.0
+                
+                let minCenter = -clampLimit + halfWidth
+                let maxCenter = self.bounds.width + clampLimit - halfWidth
+                
+                let clampedX = max(minCenter, min(point.x, maxCenter))
+                
+                self.caretView?.setTargetPosition(x: clampedX)
+                
+                // Parallax shift
+                let centerX = self.bounds.width / 2.0
+                let deltaX = point.x - centerX
+                let shift = deltaX * 0.01 // Parallax amount
+                
+                // Apply transform: translation only (parallax)
+                self.contextGestureContainerView.transform = CGAffineTransform(translationX: shift, y: 0)
+                
+                // Haptic feedback on item change
+                if let (id, _) = self.itemAt(point: point) {
+                    if self.caretHoveredItemId != id {
+                        self.caretHoveredItemId = id
+                        let selection = UISelectionFeedbackGenerator()
+                        selection.selectionChanged()
+                    }
+                }
+                
+            case .ended, .cancelled:
+                // Animate parallax reset immediately
+                UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.0, options: [], animations: {
+                    self.contextGestureContainerView.transform = .identity
+                }, completion: nil)
+                
+                if let (id, _) = self.itemAt(point: point) {
+                    var targetFrame: CGRect?
+                    
+                    // Retrieve the view again to get its true resting frame (relative to container)
+                    if let itemView = self.itemViews[id]?.view {
+                         targetFrame = self.contextGestureContainerView.convert(itemView.bounds, from: itemView)
+                    }
+                    
+                    if let frame = targetFrame {
+                        // Fade in selection view parallel to dismissal
+                        self.selectionView.isHidden = false
+                        self.selectionView.alpha = 0.0
+                        UIView.animate(withDuration: 0.25, delay: 0.0, options: [.curveEaseOut], animations: {
+                            self.selectionView.alpha = 1.0
+                        }, completion: nil)
+                        
+                        self.caretView?.animateDismissal(to: frame) { [weak self] in
+                            self?.caretView = nil
+                        }
+                    } else {
+                        // Fallback if view not found (unlikely)
+                         self.caretView?.removeFromSuperview()
+                         self.caretView = nil
+                         self.selectionView.isHidden = false
+                    }
+                    
+                    if let item = component.items.first(where: { $0.id == id }) {
+                        self.ignoreNextSelectionAnimation = true
+                        item.action(false)
+                        let impact = UIImpactFeedbackGenerator(style: .light)
+                        impact.impactOccurred()
+                    }
+                } else {
+                    // If released outside, just fade out/shrink to nothing?
+                    // Or shrink to nearest?
+                    // User said "shrink to size of backing". If no backing (no selection update), 
+                    // maybe just fade?
+                    // Let's fade if invalid target.
+                    // But API changed. We need a fallback.
+                    // Or just use previous logic for "outside" case.
+                    self.caretView?.startDragging(at: point.x) // Hack to keep alive? No.
+                    // Restore old stopDragging behavior for cancel?
+                    // Or just kill it.
+                    self.caretView?.removeFromSuperview()
+                    self.caretView = nil
+                    self.selectionView.isHidden = false
+                }
+                
+                self.caretHoveredItemId = nil
+                
+            default:
+                break
+            }
+        }
+        
+        private func itemAt(point: CGPoint) -> (AnyHashable, CGRect)? {
+            guard let _ = self.component else { return nil }
+            
+            // Find closest is better than exact hit test for dragging
+            var closest: (AnyHashable, CGRect, CGFloat)?
+            
+            for (id, itemView) in self.itemViews {
+                guard let view = itemView.view else { continue }
+                let frame = self.convert(view.bounds, from: view)
+                let dist = abs(point.x - frame.midX)
+                
+                // Allow some vertical slack
+                if point.y > frame.minY - 20 && point.y < frame.maxY + 20 {
+                    if let current = closest {
+                        if dist < current.2 {
+                            closest = (id, frame, dist)
+                        }
+                    } else {
+                        closest = (id, frame, dist)
+                    }
+                }
+            }
+            
+            if let result = closest {
+                return (result.0, result.1)
+            }
+            return nil
+        }
+        
         @objc private func onTapGesture(_ recognizer: UITapGestureRecognizer) {
             guard let component = self.component else {
                 return
@@ -413,7 +613,7 @@ public final class TabBarComponent: Component {
             }
             
             var itemSize = CGSize(width: floor((availableSize.width - innerInset * 2.0) / CGFloat(component.items.count)), height: 56.0)
-            itemSize.width = min(94.0, itemSize.width)
+            itemSize.width = min(component.maxItemWidth, itemSize.width)
             
             if let itemContainer = nativeItemContainers[0] {
                 itemSize = itemContainer.bounds.size
@@ -537,6 +737,115 @@ public final class TabBarComponent: Component {
                 selectionViewTransition.setFrame(view: self.selectionView, frame: selectionFrame)
             } else if self.selectionView.superview != nil {
                 self.selectionView.removeFromSuperview()
+            }
+            
+            // Trigger animation if selection changed (and used to select something else)
+            // AND we are in "Custom Tab Bar" mode (nativeTabBar == nil)
+            // AND we are not currently animating a gesture
+            if self.nativeTabBar == nil {
+                if self.ignoreNextSelectionAnimation {
+                    self.ignoreNextSelectionAnimation = false
+                } else if let previousId = self.previousSelectedId, previousId != component.selectedId, component.selectedId != nil {
+                     // We need to find the OLD frame.
+                     // The itemFrames depend on `contentWidth` logic which just ran above.
+                     // However, since items list usually doesn't change relative order, and even if it did,
+                     // we want the visual position.
+                     
+                     // We can find the view for the previous ID (it might still be in itemViews if not removed, or we just removed it?)
+                     // "validIds" logic above handles removals. If the item is gone from the new list, we can't fly from it easily.
+                     // But usually standard tab switching keeps items.
+                     
+                     var fromFrame: CGRect?
+                     // We can try to recover the frame from the `itemViews` before layout updates or just assume current layout applies to old item too if it exists.
+                     // The code above updated frames for ALL items in `itemViews`.
+                     
+                     if let previousView = self.itemViews[previousId]?.view {
+                         fromFrame = previousView.frame
+                     }
+                     
+                     if let startFrame = fromFrame, let endFrame = selectionFrame {
+                         // Instantiate Caret
+                         if self.caretView == nil {
+                             // Create fresh caret
+                             let caret = LiquidCaretView(frame: startFrame)
+                             
+                             // Physics Tuning
+                             caret.springTension = 180.0
+                             caret.springFriction = 28.0
+                             caret.stretchSensitivity = 0.08
+                             
+                             // Config
+                             let caretHeight = startFrame.height
+                             caret.configuration = LiquidASSView.Configuration(
+                                 cornerRadius: caretHeight / 2.0,
+                                 blurIntensity: 0.0,
+                                 lensDistortionStrength: 0.06,
+                                 tintColor: nil,
+                                 saturation: nil,
+                                 brightness: nil,
+                                 cornerSegments: 18,
+                                 contentScale: UIScreen.main.scale,
+                                 visualZoom: 1.0,
+                                 bleedAmount: 10.0,
+                                 showBorder: false,
+                                 distortionPadding: 2.2,
+                                 distortionMultiplier: 4.5,
+                                 distortionExponent: 3.0
+                             )
+                             
+                             // Insert above background
+                             if let background = self.subviews.first(where: { $0 is GlassBackgroundView }) {
+                                 self.insertSubview(caret, aboveSubview: background)
+                             } else {
+                                 self.addSubview(caret)
+                             }
+                             caret.isUserInteractionEnabled = false
+                             self.caretView = caret
+                             
+                             // Initial State: Expanded at start position
+                             caret.frame = startFrame
+                             caret.startDragging(at: startFrame.midX) // Priming physics
+                             
+                             // Start at standard size (1.0) and let animateToggle handle the expansion
+                             caret.transform = .identity
+                         }
+                         
+                         // We have a caret (either just made or existing from gesture).
+                         // If existing from gesture, it might be in weird state.
+                         // But usually gesture ends -> dismiss -> nil.
+                         // This path triggers on programmatic selection change (tap).
+                         
+                         if let caret = self.caretView {
+                             self.selectionView.isHidden = true
+                             self.selectionView.alpha = 0.0 // Ensure it starts invisible
+                             
+                             // Animate!
+                             // shrinkStart callback fires when caret starts shrinking (at 80% mark)
+                             // We fade IN the selection view then.
+                             caret.animateToggle(to: endFrame, shrinkStart: { [weak self] in
+                                 self?.selectionView.isHidden = false
+                                 self?.selectionView.alpha = 0.0
+                                 UIView.animate(withDuration: 0.2) {
+                                     self?.selectionView.alpha = 1.0
+                                 }
+                             }, completion: { [weak self] in
+                                 self?.caretView = nil
+                                 // Ensure visibility in case shrinkStart missed or timing issue (safety)
+                                 self?.selectionView.isHidden = false
+                                 self?.selectionView.alpha = 1.0 
+                             })
+                         }
+                     }
+                }
+            }
+            
+            self.previousSelectedId = component.selectedId
+            
+            // Enforce visibility logic: if caret exists, selection must be hidden
+            if self.caretView != nil {
+                self.selectionView.isHidden = true
+            } else {
+                self.selectionView.isHidden = false
             }
             
             let size = CGSize(width: min(availableSize.width, contentWidth), height: contentHeight)
